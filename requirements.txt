@@ -1,0 +1,8 @@
+gradio
+faster-whisper
+easyocr
+transformers
+torch  # Для CPU/GPU
+TTS
+moviepy
+opencv-python-headless  # Для EasyOCR и moviepy
