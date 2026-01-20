@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - .:/app  # Для разработки; удалите для продакшена
+    environment:
+      - CUDA_VISIBLE_DEVICES=0  # Если GPU
+    deploy:  # Для GPU
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
