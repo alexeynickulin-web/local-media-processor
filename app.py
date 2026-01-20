@@ -40,7 +40,8 @@ def ocr_image(image_path, source_lang="en"):
 
 def translate_text(text, target_lang="en"):
     """Перевод текста (через EN как pivot, если нужно)."""
-    # Для простоты: переводим в EN, затем в target, если target != en
+    if not text:
+        return ""
     if target_lang == "en":
         return translator(text)[0]['translation_text']
     else:
@@ -51,43 +52,93 @@ def translate_text(text, target_lang="en"):
 
 def text_to_speech(text, target_lang="en"):
     """TTS."""
+    if not text:
+        return None
     output_path = tempfile.mktemp(suffix=".wav")
     tts_model.tts_to_file(text=text, file_path=output_path, speaker="default", language=target_lang)
     return output_path
 
-def process_media(file, media_type, source_lang, target_lang):
-    """Основная функция обработки."""
-    if media_type == "Audio":
-        text, detected_lang = transcribe_audio(file, source_lang)
-    elif media_type == "Video":
-        audio_path = extract_audio_from_video(file)
-        text, detected_lang = transcribe_audio(audio_path, source_lang)
-        os.remove(audio_path)
-    elif media_type == "Image":
-        text = ocr_image(file, source_lang)
-        detected_lang = source_lang  # Для OCR нет авто-детекции
+def process_media(input_type, file, input_text, media_type, source_lang, target_lang, do_transcribe, do_translate, do_tts):
+    """Основная функция обработки с выбором действий."""
+    text = ""
+    translated_text = ""
+    tts_audio = None
+    detected_lang = source_lang
+    
+    if do_transcribe:
+        if input_type != "File" or not file:
+            return "Для транскрипции нужен файл (аудио/видео/изображение).", None, None
+        if media_type == "Audio":
+            text, detected_lang = transcribe_audio(file, source_lang)
+        elif media_type == "Video":
+            audio_path = extract_audio_from_video(file)
+            text, detected_lang = transcribe_audio(audio_path, source_lang)
+            os.remove(audio_path)
+        elif media_type == "Image":
+            text = ocr_image(file, source_lang)
+            detected_lang = source_lang  # Для OCR нет авто-детекции
+        else:
+            return "Неверный тип медиа.", None, None
     else:
-        return "Invalid media type", None, None
+        if input_type == "Text" and input_text:
+            text = input_text
+        else:
+            return "Для перевода/TTS нужен текст (или транскрипция).", None, None
     
-    translated_text = translate_text(text, target_lang)
-    tts_audio = text_to_speech(translated_text, target_lang)
+    if do_translate:
+        translated_text = translate_text(text, target_lang)
+    else:
+        translated_text = text  # Если перевод не нужен, используем оригинал для TTS
     
-    return f"Original text ({detected_lang}): {text}\nTranslated ({target_lang}): {translated_text}", tts_audio, translated_text
+    if do_tts:
+        tts_audio = text_to_speech(translated_text, target_lang)
+    
+    result_text = f"Оригинальный текст ({detected_lang}): {text}\n"
+    if do_translate:
+        result_text += f"Переведённый ({target_lang}): {translated_text}\n"
+    
+    return result_text, tts_audio, tts_audio  # Для скачивания
 
 # Gradio интерфейс
 with gr.Blocks() as demo:
-    gr.Markdown("# Local Media Processor")
-    file_input = gr.File(label="Upload Audio/Video/Image")
-    media_type = gr.Dropdown(choices=["Audio", "Video", "Image"], label="Media Type")
-    source_lang = gr.Textbox(label="Source Language (e.g., en, ru, auto for audio)")
-    target_lang = gr.Textbox(label="Target Language (e.g., en, ru)")
-    process_btn = gr.Button("Process")
+    gr.Markdown("# Local Media Processor (Flexible Actions)")
     
-    output_text = gr.Textbox(label="Result Text")
-    output_audio = gr.Audio(label="TTS Output")
-    output_download = gr.File(label="Download TTS Audio")
+    input_type = gr.Radio(choices=["File", "Text"], label="Тип входа", value="File")
+    file_input = gr.File(label="Загрузите аудио/видео/изображение (для File)")
+    input_text = gr.Textbox(label="Входной текст (для Text)", visible=False)
+    media_type = gr.Dropdown(choices=["Audio", "Video", "Image"], label="Тип медиа (для File)", visible=True)
     
-    process_btn.click(process_media, inputs=[file_input, media_type, source_lang, target_lang], outputs=[output_text, output_audio, output_download])
+    source_lang = gr.Textbox(label="Исходный язык (e.g., en, ru, auto для аудио)")
+    target_lang = gr.Textbox(label="Целевой язык (e.g., en, ru)")
+    
+    do_transcribe = gr.Checkbox(label="Выполнить транскрипцию/OCR", value=True)
+    do_translate = gr.Checkbox(label="Выполнить перевод", value=True)
+    do_tts = gr.Checkbox(label="Выполнить TTS (текст в речь)", value=True)
+    
+    process_btn = gr.Button("Обработать")
+    
+    output_text = gr.Textbox(label="Результат текста")
+    output_audio = gr.Audio(label="TTS Выход")
+    output_download = gr.File(label="Скачать TTS аудио")
+    
+    # Динамическая видимость
+    def update_visibility(input_type):
+        file_visible = input_type == "File"
+        text_visible = input_type == "Text"
+        media_visible = file_visible
+        return (
+            gr.update(visible=file_visible),
+            gr.update(visible=text_visible),
+            gr.update(visible=media_visible)
+        )
+    
+    input_type.change(update_visibility, inputs=[input_type], outputs=[file_input, input_text, media_type])
+    
+    process_btn.click(
+        process_media, 
+        inputs=[input_type, file_input, input_text, media_type, source_lang, target_lang, do_transcribe, do_translate, do_tts], 
+        outputs=[output_text, output_audio, output_download]
+    )
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
