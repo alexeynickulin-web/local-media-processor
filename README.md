@@ -47,8 +47,10 @@ cd local-media-processor
 
 2. (Опционально) Создайте .env для настройки порта или других параметров
 
-Bash# .env
+```Bash
+# .env
 PORT=7860
+```
 
 3. Запустите
 
@@ -84,7 +86,6 @@ local-media-processor/
 ```Bash
 # Пересобрать контейнер после изменения кода
 docker compose build --no-cache
-
 
 # Запустить без пересборки (быстрее)
 docker compose up
