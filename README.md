@@ -5,7 +5,7 @@
 
 Работает через удобный веб-интерфейс на **Gradio**, запускается в **Docker** (поддержка GPU и CPU).
 
-[https://github.com/ваш-username/local-media-processor](https://github.com/alexeynickulin-web/local-media-processor)
+[https://github.com/alexeynickulin-web/local-media-processor](https://github.com/alexeynickulin-web/local-media-processor)
 
 ## Возможности
 
