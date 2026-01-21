@@ -1,15 +1,14 @@
-version: '3.8'
-
 services:
   app:
     build: .
     ports:
       - "7860:7860"
     volumes:
-      - .:/app  # Для разработки; удалите для продакшена
+      - .:/app                    # весь проект
+      - ./models:/app/models      # явно монтируем папку с моделями
     environment:
-      - CUDA_VISIBLE_DEVICES=0  # Если GPU
-    deploy:  # Для GPU
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
       resources:
         reservations:
           devices:
