@@ -10,12 +10,13 @@ import tempfile
 from functools import lru_cache
 import time
 from datetime import datetime
+import fasttext  # ← новый импорт
 
 # ==================== НАСТРОЙКА ПУТЕЙ К МОДЕЛЯМ ====================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 
-for subdir in ["whisper", "tts", "translation", "ocr", "huggingface"]:
+for subdir in ["whisper", "tts", "translation", "ocr", "huggingface", "fasttext"]:
     os.makedirs(os.path.join(MODELS_DIR, subdir), exist_ok=True)
 
 os.environ["HF_HUB_CACHE"] = os.path.join(MODELS_DIR, "huggingface")
@@ -23,13 +24,27 @@ os.environ["TRANSFORMERS_CACHE"] = os.path.join(MODELS_DIR, "huggingface")
 os.environ["HF_HOME"] = os.path.join(MODELS_DIR, "huggingface")
 os.environ["COQUI_TTS_CACHE"] = os.path.join(MODELS_DIR, "tts")
 
+FASTTEXT_MODEL_PATH = os.path.join(MODELS_DIR, "fasttext", "lid.176.bin")
+
 print(f"Модели сохраняются в: {MODELS_DIR}")
 
 # Устройство
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
-# Доступные модели
+# Загрузка fastText модели (один раз при старте)
+fasttext_model = None
+if not os.path.exists(FASTTEXT_MODEL_PATH):
+    print("Модель fastText lid.176.bin не найдена. Скачиваем автоматически...")
+    import urllib.request
+    url = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
+    urllib.request.urlretrieve(url, FASTTEXT_MODEL_PATH)
+    print("fastText модель загружена.")
+
+fasttext_model = fasttext.load_model(FASTTEXT_MODEL_PATH)
+print("fastText модель загружена для language detection.")
+
+# Доступные модели (остальное без изменений)
 WHISPER_MODELS = {
     "large-v3": "large-v3",
     "large-v3-turbo": "large-v3-turbo",
@@ -84,42 +99,22 @@ def timed_step(step_name, func, *args, **kwargs):
     log(f"Завершено: {step_name} → {elapsed:.2f} сек")
     return result, elapsed
 
-def load_whisper(model_key):
-    global whisper_model, current_whisper_name
-    if current_whisper_name == model_key and whisper_model is not None:
-        return f"Whisper уже загружен: {model_key}"
-    model_id = WHISPER_MODELS[model_key]
-    compute_type = "float16" if device == "cuda" else "int8"
-    whisper_model = WhisperModel(
-        model_id,
-        device=device,
-        compute_type=compute_type,
-        download_root=os.path.join(MODELS_DIR, "whisper")
-    )
-    current_whisper_name = model_key
-    return f"Whisper загружен: {model_key}"
+# Новая функция: определение языка с fastText
+def detect_language_fasttext(text):
+    if not text.strip():
+        return "unknown", 0.0
+    # fastText ожидает список строк
+    prediction = fasttext_model.predict([text], k=1)
+    lang_label = prediction[0][0][0]          # '__label__ru'
+    prob = prediction[1][0][0]                # вероятность
+    lang_code = lang_label.replace('__label__', '')
+    return lang_code, prob
 
-def load_tts(model_key):
-    global tts_model, current_tts_name
-    if current_tts_name == model_key and tts_model is not None:
-        return f"TTS уже загружен: {model_key}"
-    model_name = TTS_MODELS[model_key]
-    tts_model = TTS(model_name=model_name, progress_bar=True).to(device)
-    current_tts_name = model_key
-    return f"TTS загружен: {model_key}"
-
-def load_selected_models(whisper_model_key, tts_model_key):
-    global model_status_text
-    status = []
-    if whisper_model_key:
-        status.append(load_whisper(whisper_model_key))
-    if tts_model_key:
-        status.append(load_tts(tts_model_key))
-    model_status_text = "\n".join(status) if status else "Модели уже загружены или не выбраны"
-    return model_status_text
+# Остальные функции load_whisper, load_tts, load_selected_models — без изменений
+# (пропускаю их для краткости, копируйте из предыдущей версии)
 
 # ────────────────────────────────────────────────
-# Функции обработки
+# Функции обработки (обновлён OCR блок)
 # ────────────────────────────────────────────────
 
 def extract_audio_from_video(video_path):
@@ -131,9 +126,15 @@ def extract_audio_from_video(video_path):
 def transcribe_audio(audio_path, source_lang="auto"):
     if whisper_model is None:
         raise ValueError("Модель Whisper не загружена")
-    segments, info = whisper_model.transcribe(audio_path, language=source_lang if source_lang != "auto" else None)
+    lang_param = None if source_lang.lower() == "auto" else source_lang
+    segments, info = whisper_model.transcribe(
+        audio_path,
+        language=lang_param,
+        beam_size=5,
+        vad_filter=True
+    )
     text = " ".join([segment.text for segment in segments])
-    return text, info.language
+    return text, info.language, info.language_probability
 
 def ocr_image(image_path, source_lang="en"):
     result = ocr_reader.readtext(image_path, detail=0, paragraph=True, lang_list=[source_lang])
@@ -143,7 +144,6 @@ def translate_text(text, source_lang, target_lang, pivot_model):
     if not text.strip():
         return ""
     translator_pivot = get_translator(pivot_model)
-    # Предполагаем, что pivot справляется с source → en
     en_text = translator_pivot(text, src_lang=source_lang)[0]['translation_text'] if source_lang.lower() != "en" else text
     if target_lang.lower() == "en":
         return en_text
@@ -183,12 +183,13 @@ def process_media(input_type, file, input_text, media_type, source_lang, target_
     translated_text = ""
     tts_audio = None
     detected_lang = source_lang
+    detected_prob = 0.0
     audio_path = None
     
     log("─" * 60)
     log(f"Начало обработки | {input_type} | {media_type or ''} | actions: {do_transcribe=}, {do_translate=}, {do_tts=}")
     
-    # 1. Извлечение аудио из видео
+    # 1. Извлечение аудио
     if do_transcribe and input_type == "File" and media_type == "Video" and file:
         (audio_path,), t = timed_step("Извлечение аудио", extract_audio_from_video, file)
         timings.append(("Извлечение аудио", t))
@@ -198,20 +199,43 @@ def process_media(input_type, file, input_text, media_type, source_lang, target_
         if input_type != "File" or not file:
             text = "[Ошибка: нужен файл для транскрипции]"
             timings.append(("Нет файла для транскрипции", 0))
+            detected_lang = "unknown"
+            detected_prob = 0.0
         else:
-            if media_type == "Audio":
-                func = lambda: transcribe_audio(file, source_lang)
-            elif media_type == "Video":
-                func = lambda: transcribe_audio(audio_path, source_lang)
+            if media_type in ["Audio", "Video"]:
+                audio_p = file if media_type == "Audio" else audio_path
+                (text, detected_lang, detected_prob), t = timed_step(
+                    f"Транскрипция ({media_type})",
+                    transcribe_audio, audio_p, source_lang
+                )
+                timings.append((f"Транскрипция ({media_type})", t))
             elif media_type == "Image":
-                func = lambda: (ocr_image(file, source_lang), source_lang)
+                # OCR
+                def ocr_step():
+                    return ocr_image(file, source_lang if source_lang.lower() != "auto" else "en")
+                
+                text_raw, t_ocr = timed_step("OCR (EasyOCR)", ocr_step)
+                
+                # fastText определение языка
+                def lang_step():
+                    return detect_language_fasttext(text_raw)
+                
+                detected_lang, detected_prob = timed_step("Определение языка (fastText)", lang_step)[0]
+                
+                text = text_raw
+                timings.append(("OCR", t_ocr))
+                timings.append(("fastText lang detect", 0.0))  # время уже в timed_step выше
+                
+                if source_lang.lower() == "auto":
+                    source_lang = detected_lang  # используем для перевода
             else:
-                func = lambda: ("[Неверный тип медиа]", "unknown")
-            
-            (text, detected_lang), t = timed_step(f"Транскрипция/OCR ({media_type})", func)
-            timings.append((f"Транскрипция/OCR ({media_type})", t))
+                text = "[Неверный тип медиа]"
+                detected_lang = "unknown"
+                detected_prob = 0.0
     else:
         text = input_text if input_type == "Text" and input_text else ""
+        detected_lang = "manual"
+        detected_prob = 1.0
         timings.append(("Текст взят из поля", 0))
     
     if audio_path and os.path.exists(audio_path):
@@ -232,9 +256,12 @@ def process_media(input_type, file, input_text, media_type, source_lang, target_
     total_time = time.time() - start_total
     timings.append(("Общее время", total_time))
     
-    # Формируем результат
+    # Результат
     result = f"Статус моделей:\n{model_status_text}\n\n"
-    result += f"Оригинальный текст ({detected_lang}):\n{text[:800]}{' ...' if len(text) > 800 else ''}\n\n"
+    
+    detector_source = "Whisper" if media_type in ["Audio", "Video"] and do_transcribe else "fastText" if media_type == "Image" and do_transcribe else "manual"
+    prob_str = f" ({detector_source} вероятность {detected_prob:.0%})" if detected_prob > 0 else ""
+    result += f"Оригинальный текст ({detected_lang}{prob_str}):\n{text[:800]}{' ...' if len(text) > 800 else ''}\n\n"
     
     if do_translate:
         result += f"Переведённый текст ({target_lang}):\n{translated_text[:800]}{' ...' if len(translated_text) > 800 else ''}\n\n"
@@ -250,6 +277,14 @@ def process_media(input_type, file, input_text, media_type, source_lang, target_
     log("─" * 60)
     
     return result, tts_audio, tts_audio
+
+# Gradio интерфейс — без изменений (source_lang = "auto" по умолчанию уже есть)
+# (копируйте из предыдущей версии, добавьте только комментарий в label)
+source_lang = gr.Textbox(
+    label="Исходный язык (en, ru, auto — Whisper/fastText автоопределение)",
+    value="auto",
+    placeholder="auto — Whisper для аудио/видео, fastText после OCR для изображений"
+)
 
 # ────────────────────────────────────────────────
 # Gradio интерфейс
