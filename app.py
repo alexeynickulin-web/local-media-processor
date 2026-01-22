@@ -25,14 +25,7 @@ NLLB_LANG_MAP = {
     "es": "spa_Latn",
     "zh": "zho_Hans",
     "ja": "jpn_Jpan",
-    # Добавьте другие по необходимости
 }
-
-# Добавляем NLLB в список моделей перевода
-TRANSLATION_MODELS_DIRECT = [
-    "facebook/nllb-200-distilled-600M", # Легкая и быстрая
-    "facebook/nllb-200-distilled-1.3B", # Более точная
-]
 
 # ==================== НАСТРОЙКА ПУТЕЙ К МОДЕЛЯМ ====================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -82,9 +75,11 @@ TTS_MODELS = {
     "ru/vits": "tts_models/ru/multi-dataset/vits",
 }
 
-TRANSLATION_MODELS_PIVOT = [
+TRANSLATION_MODELS = [
     "Helsinki-NLP/opus-mt-mul-en",
     "Helsinki-NLP/opus-mt-tc-big-mul-en",
+    "facebook/nllb-200-distilled-600M",
+    "facebook/nllb-200-distilled-1.3B",
 ]
 
 # Глобальные переменные
@@ -166,7 +161,7 @@ def load_selected_models(whisper_model_key, tts_model_key):
     return model_status_text
 
 # ────────────────────────────────────────────────
-# Функции обработки (обновлён OCR блок)
+# Функции обработки
 # ────────────────────────────────────────────────
 
 def extract_audio_from_video(video_path):
@@ -177,16 +172,13 @@ def extract_audio_from_video(video_path):
 
 def transcribe_audio(audio_path, source_lang="auto"):
     if whisper_model is None:
-        raise ValueError("Модель Whisper не загружена")
+        raise ValueError("Whisper не загружен")
     lang_param = None if source_lang.lower() == "auto" else source_lang
     segments, info = whisper_model.transcribe(
-        audio_path,
-        language=lang_param,
-        beam_size=5,
-        vad_filter=True
+        audio_path, language=lang_param, beam_size=5, vad_filter=True
     )
-    text = " ".join([segment.text for segment in segments])
-    return text, info.language, info.language_probability
+    full_text = " ".join([s.text for s in segments])
+    return full_text, info.language, info.language_probability, segments
 
 def ocr_image(image_path, source_lang="en"):
     result = ocr_reader.readtext(image_path, detail=0, paragraph=True, lang_list=[source_lang])
@@ -195,127 +187,71 @@ def ocr_image(image_path, source_lang="en"):
 def translate_text(text, source_lang, target_lang, model_name):
     if not text.strip():
         return ""
-    
-    # Проверяем, выбрана ли модель NLLB
-    if "nllb" in model_name.lower():
-        try:
-            # Загружаем пайплайн перевода (лучше кэшировать это через lru_cache отдельно)
-            translator = get_translator(model_name) 
-            
+    try:
+        translator = get_translator(model_name)
+        if "nllb" in model_name.lower():
             src_code = NLLB_LANG_MAP.get(source_lang, "eng_Latn")
             tgt_code = NLLB_LANG_MAP.get(target_lang, "eng_Latn")
-            
-            # NLLB требует явного указания src_lang и tgt_lang в формате FLORES
-            result = translator(
-                text, 
-                src_lang=src_code, 
-                tgt_lang=tgt_code,
-                max_length=1024
-            )
+            result = translator(text, src_lang=src_code, tgt_lang=tgt_code, max_length=1024)
             return result[0]['translation_text']
-        except Exception as e:
-            return f"[Ошибка NLLB: {e}]"
-
-    # --- Старая логика (Pivot через English) ---
-    else:
-        translator_pivot = get_translator(model_name) # Это pivot модель
-        en_text = translator_pivot(text, src_lang=source_lang)[0]['translation_text'] if source_lang.lower() != "en" else text
-        if target_lang.lower() == "en":
-            return en_text
-        target_model = f"Helsinki-NLP/opus-mt-en-{target_lang}"
-        try:
-            translator_target = get_translator(target_model)
-            return translator_target(en_text)[0]['translation_text']
-        except Exception as e:
-            return f"[Ошибка перевода в {target_lang}: {str(e)}]"
+        else:
+            # Pivot логика (как раньше)
+            en_text = translator(text, src_lang=source_lang)[0]['translation_text'] if source_lang.lower() != "en" else text
+            if target_lang.lower() == "en":
+                return en_text
+            tgt_model = f"Helsinki-NLP/opus-mt-en-{target_lang}"
+            tgt_translator = get_translator(tgt_model)
+            return tgt_translator(en_text)[0]['translation_text']
+    except Exception as e:
+        return f"[Ошибка перевода: {str(e)}]"
 
 def diarize_audio(audio_path, hf_token):
-    if not hf_token:
+    if not hf_token or not audio_path:
         return []
     
     print("Запуск диаризации...")
     try:
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token
-        ).to(torch.device(device))
-        
-        diarization = pipeline(audio_path)
-        
-        # Преобразуем в список сегментов
+        pipe = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token).to(torch.device(device))
+        diarization = pipe(audio_path)
         segments = []
         for turn, _, speaker in diarization.itertracks(yield_label=True):
-            segments.append({
-                "start": turn.start,
-                "end": turn.end,
-                "speaker": speaker
-            })
+            segments.append({"start": turn.start, "end": turn.end, "speaker": speaker})
         return segments
     except Exception as e:
         print(f"Ошибка диаризации: {e}")
         return []
 
-# Функция слияния текста (Whisper) и спикеров (Pyannote)
-def merge_transcription_and_diarization(whisper_segments, diarization_segments):
-    final_output = []
-    
-    # Простой алгоритм: для каждого сегмента текста ищем доминирующего спикера по времени
-    for text_seg in whisper_segments:
-        seg_start = text_seg.start
-        seg_end = text_seg.end
-        
-        # Находим пересечения
-        speakers_counts = {}
-        for diag_seg in diarization_segments:
-            # Вычисляем пересечение интервалов
-            overlap_start = max(seg_start, diag_seg["start"])
-            overlap_end = min(seg_end, diag_seg["end"])
-            overlap = max(0, overlap_end - overlap_start)
-            
+def merge_transcription_and_diarization(whisper_segments, diar_segments):
+    if not diar_segments:
+        return "\n".join([f"{s.text}" for s in whisper_segments])
+    final = []
+    for w_seg in whisper_segments:
+        start, end = w_seg.start, w_seg.end
+        speakers = {}
+        for d in diar_segments:
+            o_start = max(start, d["start"])
+            o_end = min(end, d["end"])
+            overlap = max(0, o_end - o_start)
             if overlap > 0:
-                speakers_counts[diag_seg["speaker"]] = speakers_counts.get(diag_seg["speaker"], 0) + overlap
-        
-        # Берем спикера с максимальным перекрытием или "Unknown"
-        best_speaker = max(speakers_counts, key=speakers_counts.get) if speakers_counts else "Unknown"
-        
-        final_output.append(f"[{best_speaker}] ({seg_start:.1f}-{seg_end:.1f}): {text_seg.text}")
-        
-    return "\n".join(final_output)
+                speakers[d["speaker"]] = speakers.get(d["speaker"], 0) + overlap
+        best = max(speakers, key=speakers.get) if speakers else "Unknown"
+        final.append(f"[{best}] ({start:.1f}-{end:.1f}): {w_seg.text}")
+    return "\n".join(final)
 
-def text_to_speech(text, target_lang="en", speaker_wav=None):
+def text_to_speech(text, target_lang="en", ref_audio=None):
     if tts_model is None or not text.strip():
         return None
     output_path = tempfile.mktemp(suffix=".wav")
-    
-    # Маппинг для XTTS (он требует 'en', 'ru' и т.д., но проверим совместимость)
-    # XTTS v2 поддерживает: en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, hu, ko, ja
-    
     try:
-        if speaker_wav and os.path.exists(speaker_wav):
-            # РЕЖИМ КЛОНИРОВАНИЯ
-            print(f"Используем клонирование голоса из: {speaker_wav}")
-            tts_model.tts_to_file(
-                text=text,
-                file_path=output_path,
-                speaker_wav=speaker_wav, # ← Ключевой аргумент
-                language=target_lang
-            )
+        if ref_audio and os.path.exists(ref_audio):
+            tts_model.tts_to_file(text=text, file_path=output_path, speaker_wav=ref_audio, language=target_lang)
         else:
-            # СТАНДАРТНЫЙ РЕЖИМ
-            # Для XTTS нужно указать speaker, если не клонируем. 
-            # Обычно 'Ana Florence' или другой из tts_model.speakers
-            default_speaker = tts_model.speakers[0] if tts_model.speakers else "default"
-            tts_model.tts_to_file(
-                text=text, 
-                file_path=output_path, 
-                speaker=default_speaker, 
-                language=target_lang
-            )
+            tts_model.tts_to_file(text=text, file_path=output_path, language=target_lang)  # без speaker_wav — дефолт
+        return output_path
     except Exception as e:
-        print(f"Ошибка TTS: {e}")
+        print(f"TTS ошибка: {e}")
         return None
-        
-    return output_path
+
 
 def process_media(input_type, file, input_text, media_type, source_lang, target_lang,
                   do_transcribe, do_translate, do_tts, whisper_model_key, tts_model_key, pivot_model):
@@ -338,84 +274,90 @@ def process_media(input_type, file, input_text, media_type, source_lang, target_
     detected_lang = source_lang
     detected_prob = 0.0
     audio_path = None
+    whisper_segments = None
     
     log("─" * 60)
-    log(f"Начало обработки | {input_type} | {media_type or ''} | actions: {do_transcribe=}, {do_translate=}, {do_tts=}")
-    
-    # 1. Извлечение аудио
+    log(f"Обработка: {input_type} | {media_type} | transcribe={do_transcribe} translate={do_translate} tts={do_tts} diar={do_diarization}")
+
+    # Извлечение аудио
     if do_transcribe and input_type == "File" and media_type == "Video" and file:
-        (audio_path,), t = timed_step("Извлечение аудио", extract_audio_from_video, file)
+        audio_path, t = timed_step("Извлечение аудио", extract_audio_from_video, file)
         timings.append(("Извлечение аудио", t))
     
-    # 2. Транскрипция / OCR
+    # Транскрипция / OCR
     if do_transcribe:
         if input_type != "File" or not file:
             text = "[Ошибка: нужен файл для транскрипции]"
             timings.append(("Нет файла для транскрипции", 0))
-            detected_lang = "unknown"
-            detected_prob = 0.0
         else:
             if media_type in ["Audio", "Video"]:
                 audio_p = file if media_type == "Audio" else audio_path
-                (text, detected_lang, detected_prob), t = timed_step(
-                    f"Транскрипция ({media_type})",
-                    transcribe_audio, audio_p, source_lang
-                )
-                timings.append((f"Транскрипция ({media_type})", t))
+                full_text, detected_lang, detected_prob, whisper_segments = timed_step(
+                    f"Транскрипция ({media_type})", transcribe_audio, audio_p, source_lang
+                )[0]
+                text = full_text
+                timings.append((f"Транскрипция ({media_type})", 0))  # время уже учтено
+
+                # Диаризация
+                if do_diarization and audio_p:
+                    diar_segments, t_diar = timed_step(
+                        "Диаризация (pyannote)", diarize_audio, audio_p, hf_token
+                    )
+                    timings.append(("Диаризация", t_diar))
+                    if whisper_segments:
+                        text = merge_transcription_and_diarization(whisper_segments, diar_segments)
             elif media_type == "Image":
-                # OCR
-                def ocr_step():
-                    return ocr_image(file, source_lang if source_lang.lower() != "auto" else "en")
-                
-                text_raw, t_ocr = timed_step("OCR (EasyOCR)", ocr_step)
-                
-                # fastText определение языка
-                def lang_step():
-                    return detect_language_fasttext(text_raw)
-                
-                detected_lang, detected_prob = timed_step("Определение языка (fastText)", lang_step)[0]
-                
+                # OCR + fastText
+                                
+                text_raw, t_ocr = timed_step("OCR", lambda: ocr_image(file, source_lang if source_lang != "auto" else "en"))
+                detected_lang, detected_prob = timed_step("fastText", lambda: detect_language_fasttext(text_raw))[0]
                 text = text_raw
-                timings.append(("OCR", t_ocr))
-                timings.append(("fastText lang detect", 0.0))  # время уже в timed_step выше
-                
+                timings.append(("OCR + fastText", t_ocr))
+
                 if source_lang.lower() == "auto":
                     source_lang = detected_lang  # используем для перевода
             else:
                 text = "[Неверный тип медиа]"
-                detected_lang = "unknown"
-                detected_prob = 0.0
+
     else:
-        text = input_text if input_type == "Text" and input_text else ""
-        detected_lang = "manual"
-        detected_prob = 1.0
+        text = input_text or ""
         timings.append(("Текст взят из поля", 0))
     
     if audio_path and os.path.exists(audio_path):
         os.remove(audio_path)
     
-    # 3. Перевод
+    # Перевод
     if do_translate and text.strip():
-        translated_text, t = timed_step(f"Перевод → {target_lang}", translate_text, text, source_lang, target_lang, pivot_model)
-        timings.append((f"Перевод → {target_lang}", t))
+        translated_text, t = timed_step(
+            f"Перевод ({translation_model} → {target_lang})",
+            translate_text, text, source_lang, target_lang, translation_model
+        )
+        timings.append((f"Перевод", t))
     else:
         translated_text = text
     
-    # 4. TTS
+    # TTS
     if do_tts and translated_text.strip():
-        tts_audio, t = timed_step(f"TTS ({target_lang})", text_to_speech, translated_text, target_lang)
-        timings.append((f"TTS ({target_lang})", t))
+        tts_audio, t = timed_step(
+            f"TTS ({target_lang}) {'+ cloning' if ref_audio else ''}",
+            text_to_speech, translated_text, target_lang, ref_audio if do_cloning else None
+        )
+        timings.append(("TTS", t))
     
+    # Очистка памяти
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
     total_time = time.time() - start_total
     timings.append(("Общее время", total_time))
     
     # Результат
     result = f"Статус моделей:\n{model_status_text}\n\n"
-    
-    detector_source = "Whisper" if media_type in ["Audio", "Video"] and do_transcribe else "fastText" if media_type == "Image" and do_transcribe else "manual"
-    prob_str = f" ({detector_source} вероятность {detected_prob:.0%})" if detected_prob > 0 else ""
-    result += f"Оригинальный текст ({detected_lang}{prob_str}):\n{text[:800]}{' ...' if len(text) > 800 else ''}\n\n"
-    
+    detector = "Whisper" if media_type in ["Audio", "Video"] else "fastText" if media_type == "Image" else "manual"
+    prob_str = f" ({detector} вероятность {detected_prob:.0%})" if detected_prob > 0 else ""
+    result += f"Оригинальный текст ({detected_lang}{prob_str}):\n{text[:800]}{'...' if len(text)>800 else ''}\n\n"
+
     if do_translate:
         result += f"Переведённый текст ({target_lang}):\n{translated_text[:800]}{' ...' if len(translated_text) > 800 else ''}\n\n"
     
@@ -432,7 +374,6 @@ def process_media(input_type, file, input_text, media_type, source_lang, target_
     return result, tts_audio, tts_audio
 
 # Gradio интерфейс — без изменений (source_lang = "auto" по умолчанию уже есть)
-# (копируйте из предыдущей версии, добавьте только комментарий в label)
 source_lang = gr.Textbox(
     label="Исходный язык (en, ru, auto — Whisper/fastText автоопределение)",
     value="auto",
@@ -468,7 +409,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     # 2. Обновляем выбор моделей перевода, добавляем NLLB
     translation_model_dropdown = gr.Dropdown(
-        choices=TRANSLATION_MODELS_PIVOT + TRANSLATION_MODELS_DIRECT,
+        choices=TRANSLATION_MODELS,
         label="Модель перевода",
         value="facebook/nllb-200-distilled-600M" # NLLB по умолчанию
     )
