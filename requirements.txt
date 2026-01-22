@@ -7,3 +7,8 @@ TTS
 moviepy
 opencv-python-headless  # Для EasyOCR и moviepy
 fasttext-wheel
+
+pyannote.audio
+accelerate
+sentencepiece
+protobuf

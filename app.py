@@ -11,6 +11,28 @@ from functools import lru_cache
 import time
 from datetime import datetime
 import fasttext  # ← новый импорт
+import gc # Для очистки памяти
+from pyannote.audio import Pipeline # Диаризация
+
+
+# ==================== НАСТРОЙКА NLLB (Прямой перевод) ====================
+# Словарь маппинга языков (NLLB использует FLORES-200 коды)
+NLLB_LANG_MAP = {
+    "en": "eng_Latn",
+    "ru": "rus_Cyrl",
+    "fr": "fra_Latn",
+    "de": "deu_Latn",
+    "es": "spa_Latn",
+    "zh": "zho_Hans",
+    "ja": "jpn_Jpan",
+    # Добавьте другие по необходимости
+}
+
+# Добавляем NLLB в список моделей перевода
+TRANSLATION_MODELS_DIRECT = [
+    "facebook/nllb-200-distilled-600M", # Легкая и быстрая
+    "facebook/nllb-200-distilled-1.3B", # Более точная
+]
 
 # ==================== НАСТРОЙКА ПУТЕЙ К МОДЕЛЯМ ====================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -170,28 +192,129 @@ def ocr_image(image_path, source_lang="en"):
     result = ocr_reader.readtext(image_path, detail=0, paragraph=True, lang_list=[source_lang])
     return " ".join(result)
 
-def translate_text(text, source_lang, target_lang, pivot_model):
+def translate_text(text, source_lang, target_lang, model_name):
     if not text.strip():
         return ""
-    translator_pivot = get_translator(pivot_model)
-    en_text = translator_pivot(text, src_lang=source_lang)[0]['translation_text'] if source_lang.lower() != "en" else text
-    if target_lang.lower() == "en":
-        return en_text
-    target_model = f"Helsinki-NLP/opus-mt-en-{target_lang}"
-    try:
-        translator_target = get_translator(target_model)
-        return translator_target(en_text)[0]['translation_text']
-    except Exception as e:
-        return f"[Ошибка перевода в {target_lang}: {str(e)}]"
+    
+    # Проверяем, выбрана ли модель NLLB
+    if "nllb" in model_name.lower():
+        try:
+            # Загружаем пайплайн перевода (лучше кэшировать это через lru_cache отдельно)
+            translator = get_translator(model_name) 
+            
+            src_code = NLLB_LANG_MAP.get(source_lang, "eng_Latn")
+            tgt_code = NLLB_LANG_MAP.get(target_lang, "eng_Latn")
+            
+            # NLLB требует явного указания src_lang и tgt_lang в формате FLORES
+            result = translator(
+                text, 
+                src_lang=src_code, 
+                tgt_lang=tgt_code,
+                max_length=1024
+            )
+            return result[0]['translation_text']
+        except Exception as e:
+            return f"[Ошибка NLLB: {e}]"
 
-def text_to_speech(text, target_lang="en"):
+    # --- Старая логика (Pivot через English) ---
+    else:
+        translator_pivot = get_translator(model_name) # Это pivot модель
+        en_text = translator_pivot(text, src_lang=source_lang)[0]['translation_text'] if source_lang.lower() != "en" else text
+        if target_lang.lower() == "en":
+            return en_text
+        target_model = f"Helsinki-NLP/opus-mt-en-{target_lang}"
+        try:
+            translator_target = get_translator(target_model)
+            return translator_target(en_text)[0]['translation_text']
+        except Exception as e:
+            return f"[Ошибка перевода в {target_lang}: {str(e)}]"
+
+def diarize_audio(audio_path, hf_token):
+    if not hf_token:
+        return []
+    
+    print("Запуск диаризации...")
+    try:
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token
+        ).to(torch.device(device))
+        
+        diarization = pipeline(audio_path)
+        
+        # Преобразуем в список сегментов
+        segments = []
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            segments.append({
+                "start": turn.start,
+                "end": turn.end,
+                "speaker": speaker
+            })
+        return segments
+    except Exception as e:
+        print(f"Ошибка диаризации: {e}")
+        return []
+
+# Функция слияния текста (Whisper) и спикеров (Pyannote)
+def merge_transcription_and_diarization(whisper_segments, diarization_segments):
+    final_output = []
+    
+    # Простой алгоритм: для каждого сегмента текста ищем доминирующего спикера по времени
+    for text_seg in whisper_segments:
+        seg_start = text_seg.start
+        seg_end = text_seg.end
+        
+        # Находим пересечения
+        speakers_counts = {}
+        for diag_seg in diarization_segments:
+            # Вычисляем пересечение интервалов
+            overlap_start = max(seg_start, diag_seg["start"])
+            overlap_end = min(seg_end, diag_seg["end"])
+            overlap = max(0, overlap_end - overlap_start)
+            
+            if overlap > 0:
+                speakers_counts[diag_seg["speaker"]] = speakers_counts.get(diag_seg["speaker"], 0) + overlap
+        
+        # Берем спикера с максимальным перекрытием или "Unknown"
+        best_speaker = max(speakers_counts, key=speakers_counts.get) if speakers_counts else "Unknown"
+        
+        final_output.append(f"[{best_speaker}] ({seg_start:.1f}-{seg_end:.1f}): {text_seg.text}")
+        
+    return "\n".join(final_output)
+
+def text_to_speech(text, target_lang="en", speaker_wav=None):
     if tts_model is None or not text.strip():
         return None
     output_path = tempfile.mktemp(suffix=".wav")
+    
+    # Маппинг для XTTS (он требует 'en', 'ru' и т.д., но проверим совместимость)
+    # XTTS v2 поддерживает: en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, hu, ko, ja
+    
     try:
-        tts_model.tts_to_file(text=text, file_path=output_path, speaker="default", language=target_lang)
-    except:
-        tts_model.tts_to_file(text=text, file_path=output_path, speaker="default")
+        if speaker_wav and os.path.exists(speaker_wav):
+            # РЕЖИМ КЛОНИРОВАНИЯ
+            print(f"Используем клонирование голоса из: {speaker_wav}")
+            tts_model.tts_to_file(
+                text=text,
+                file_path=output_path,
+                speaker_wav=speaker_wav, # ← Ключевой аргумент
+                language=target_lang
+            )
+        else:
+            # СТАНДАРТНЫЙ РЕЖИМ
+            # Для XTTS нужно указать speaker, если не клонируем. 
+            # Обычно 'Ana Florence' или другой из tts_model.speakers
+            default_speaker = tts_model.speakers[0] if tts_model.speakers else "default"
+            tts_model.tts_to_file(
+                text=text, 
+                file_path=output_path, 
+                speaker=default_speaker, 
+                language=target_lang
+            )
+    except Exception as e:
+        print(f"Ошибка TTS: {e}")
+        return None
+        
     return output_path
 
 def process_media(input_type, file, input_text, media_type, source_lang, target_lang,
@@ -330,11 +453,36 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     }
 """) as demo:
     
-    gr.Markdown("# Local Media Processor (2025–2026 edition)")
+    gr.Markdown("# Local Media Processor")
     
+    # 1. Поле для токена HF (нужен для диаризации)
+    hf_token_input = gr.Textbox(
+        label="HuggingFace Token (для диаризации pyannote)", 
+        type="password",
+        placeholder="hf_..."
+    )
+
     with gr.Row():
         whisper_dropdown = gr.Dropdown(choices=list(WHISPER_MODELS.keys()), label="Модель Whisper", value="large-v3")
         tts_dropdown = gr.Dropdown(choices=list(TTS_MODELS.keys()), label="Модель TTS", value="xtts_v2 (multilingual)")
+    
+    # 2. Обновляем выбор моделей перевода, добавляем NLLB
+    translation_model_dropdown = gr.Dropdown(
+        choices=TRANSLATION_MODELS_PIVOT + TRANSLATION_MODELS_DIRECT,
+        label="Модель перевода",
+        value="facebook/nllb-200-distilled-600M" # NLLB по умолчанию
+    )
+
+    # 3. Добавляем загрузку аудио для клонирования
+    with gr.Row():
+        do_cloning = gr.Checkbox(label="Использовать клонирование голоса", value=False)
+        ref_audio_input = gr.Audio(
+            label="Образец голоса (Reference Audio)", 
+            type="filepath", 
+            visible=False
+        )
+    # 4. Чекбокс для диаризации
+    do_diarization = gr.Checkbox(label="Включить диаризацию (разделение по спикерам)", value=False)
     
     pivot_translation = gr.Dropdown(choices=TRANSLATION_MODELS_PIVOT, label="Модель перевода → EN (pivot)", value="Helsinki-NLP/opus-mt-mul-en")
     
@@ -388,14 +536,23 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         inputs=[whisper_dropdown, tts_dropdown],
         outputs=[model_status]
     )
-    
+
+    def toggle_cloning(chk):
+        return gr.update(visible=chk)
+
+    do_cloning.change(toggle_cloning, do_cloning, ref_audio_input)
+
     process_btn.click(
         process_media,
         inputs=[
             input_type, file_input, input_text, media_type,
             source_lang, target_lang,
             do_transcribe, do_translate, do_tts,
-            whisper_dropdown, tts_dropdown, pivot_translation
+            whisper_dropdown, tts_dropdown, 
+            translation_model_dropdown, # вместо pivot_translation
+            do_diarization,
+            hf_token_input,
+            ref_audio_input # аудио для клонирования
         ],
         outputs=[output_text, output_audio, output_download]
     )
