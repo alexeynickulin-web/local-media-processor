@@ -99,7 +99,6 @@ def timed_step(step_name, func, *args, **kwargs):
     log(f"Завершено: {step_name} → {elapsed:.2f} сек")
     return result, elapsed
 
-# Новая функция: определение языка с fastText
 def detect_language_fasttext(text):
     if not text.strip():
         return "unknown", 0.0
@@ -110,8 +109,39 @@ def detect_language_fasttext(text):
     lang_code = lang_label.replace('__label__', '')
     return lang_code, prob
 
-# Остальные функции load_whisper, load_tts, load_selected_models — без изменений
-# (пропускаю их для краткости, копируйте из предыдущей версии)
+def load_whisper(model_key):
+    global whisper_model, current_whisper_name
+    if current_whisper_name == model_key and whisper_model is not None:
+        return f"Whisper уже загружен: {model_key}"
+    model_id = WHISPER_MODELS[model_key]
+    compute_type = "float16" if device == "cuda" else "int8"
+    whisper_model = WhisperModel(
+        model_id,
+        device=device,
+        compute_type=compute_type,
+        download_root=os.path.join(MODELS_DIR, "whisper")
+    )
+    current_whisper_name = model_key
+    return f"Whisper загружен: {model_key}"
+
+def load_tts(model_key):
+    global tts_model, current_tts_name
+    if current_tts_name == model_key and tts_model is not None:
+        return f"TTS уже загружен: {model_key}"
+    model_name = TTS_MODELS[model_key]
+    tts_model = TTS(model_name=model_name, progress_bar=True).to(device)
+    current_tts_name = model_key
+    return f"TTS загружен: {model_key}"
+
+def load_selected_models(whisper_model_key, tts_model_key):
+    global model_status_text
+    status = []
+    if whisper_model_key:
+        status.append(load_whisper(whisper_model_key))
+    if tts_model_key:
+        status.append(load_tts(tts_model_key))
+    model_status_text = "\n".join(status) if status else "Модели уже загружены или не выбраны"
+    return model_status_text
 
 # ────────────────────────────────────────────────
 # Функции обработки (обновлён OCR блок)
