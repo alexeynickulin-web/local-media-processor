@@ -1,0 +1,17 @@
+[project]
+name = "local-media-processor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "easyocr>=1.7.2",
+    "faster-whisper>=1.2.1",
+    "fasttext>=0.9.3",
+    "gradio>=6.4.0",
+    "moviepy>=2.2.1",
+    "pyannote-audio==3.3.2",
+    "torchaudio==2.8.0",
+    "transformers==4.51.3",
+    "tts>=0.22.0",
+]
