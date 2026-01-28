@@ -11,7 +11,10 @@ dependencies = [
     "gradio>=6.4.0",
     "moviepy>=2.2.1",
     "pyannote-audio==3.3.2",
+    "pysrt>=1.1.2",
+    "retrying>=1.4.2",
     "torchaudio==2.8.0",
     "transformers==4.51.3",
     "tts>=0.22.0",
+    "yt-dlp>=2025.12.8",
 ]
