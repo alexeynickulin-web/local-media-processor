@@ -41,7 +41,7 @@
 1. Склонируйте репозиторий
 
 ```bash
-git clone https://github.com/ваш-username/local-media-processor.git
+git clone https://github.com/alexeynickulin-web/local-media-processor.git
 cd local-media-processor
 ```
 
