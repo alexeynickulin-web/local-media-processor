@@ -1,13 +1,15 @@
 gradio
-faster-whisper
+whisperx
 easyocr
 transformers
-torch  # Для CPU/GPU
-TTS
+torch
+edge-tts
+ffmpeg-python
+pysrt
+yt-dlp
 moviepy
-opencv-python-headless  # Для EasyOCR и moviepy
+opencv-python-headless
 fasttext-wheel
-
 pyannote.audio
 accelerate
 sentencepiece

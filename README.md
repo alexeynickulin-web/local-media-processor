@@ -68,18 +68,30 @@ http://localhost:7860
 # Структура проекта
 ```text
 local-media-processor/
-├── app.py                  # основной код + Gradio интерфейс
-├── requirements.txt        # python-зависимости
-├── Dockerfile              # сборка контейнера
-├── docker-compose.yml      # запуск сервиса
-├── models/                 # все скачанные модели (создаётся автоматически)
-│   ├── whisper/
-│   ├── tts/
-│   ├── translation/
-│   ├── ocr/
-│   └── huggingface/
+├── app.py                  # монолитный Gradio-интерфейс (опционально)
+├── docker-compose.yml      # микросервисы + оркестратор
+├── data/                   # общий объём для входных/выходных файлов (создаётся при запуске)
+├── models/                 # скачанные модели (ASR, OCR, translation и т.д.)
+├── services/
+│   ├── orchestrator/       # API: /process — запускает цепочку ASR/OCR → translate → TTS
+│   ├── asr/                # транскрипция (WhisperX)
+│   ├── ocr/                # распознавание текста (EasyOCR)
+│   ├── translate/          # перевод (NLLB)
+│   └── tts/                # синтез речи (Edge TTS)
+├── shared/ml_contracts/    # общие Pydantic-схемы для сервисов
 └── README.md
 ```
+
+## Запуск микросервисов (Docker Compose)
+
+1. Из корня репозитория:
+```bash
+docker compose up --build
+```
+2. Оркестратор: `http://localhost:8000`
+   - `POST /process` — тело: `{"file_path": "/data/input/audio.wav"}` или `{"file_path": "/data/input/image.png", "file_type": "image"}`
+   - Файлы должны лежать в смонтированном каталоге `./data` (например, `./data/input/`).
+3. Для GPU (ASR): нужны NVIDIA Container Toolkit и `deploy.resources.reservations.devices` в `docker-compose.yml` (уже настроено).
 
 # Полезные команды
 

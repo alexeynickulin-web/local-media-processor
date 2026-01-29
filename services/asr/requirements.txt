@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+torch
+whisperx
+ffmpeg-python
+# ml-contracts==0.1.0

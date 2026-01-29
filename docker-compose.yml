@@ -1,16 +1,53 @@
 services:
-  app:
-    build: .
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
     ports:
-      - "7860:7860"
+      - "8000:8000"
+    depends_on:
+      - asr
+      - translate
+      - ocr
+      - tts
     volumes:
-      - .:/app                    # весь проект
-      - ./models:/app/models      # явно монтируем папку с моделями
-    environment:
-      - CUDA_VISIBLE_DEVICES=0
+      - ./data:/data
+
+  asr:
+    build:
+      context: .
+      dockerfile: services/asr/Dockerfile
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
+              count: 1
               capabilities: [gpu]
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+
+  translate:
+    build:
+      context: .
+      dockerfile: services/translate/Dockerfile
+    volumes:
+      - ./data:/data
+
+  ocr:
+    build:
+      context: .
+      dockerfile: services/ocr/Dockerfile
+    volumes:
+      - ./models:/models
+      - ./data:/data
+
+  tts:
+    build:
+      context: .
+      dockerfile: services/tts/Dockerfile
+    volumes:
+      - ./data:/data
