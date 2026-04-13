@@ -1,0 +1,56 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.egg-info
+dist
+build
+.venv
+.venvs
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Cache
+.ruff_cache
+.pytest_cache
+.mypy_cache
+
+# Models (will be mounted as volumes)
+models/*
+!models/.gitkeep
+
+# Logs
+*.log
+app.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Documentation (except README)
+*.md
+!README.md
+!IMPROVEMENTS.md
+!TODO.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+
+# Temp files
+*.tmp
+*.temp

@@ -1,16 +1,178 @@
+version: "3.8"
+
 services:
-  app:
-    build: .
+  # Redis for Celery message broker and result backend
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - media-network
+
+  # API Gateway - routes requests to backend services
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - media-network
+
+  # Gradio UI
+  gradio-ui:
+    build:
+      context: .
+      dockerfile: services/gradio-ui/Dockerfile
     ports:
       - "7860:7860"
-    volumes:
-      - .:/app                    # весь проект
-      - ./models:/app/models      # явно монтируем папку с моделями
     environment:
-      - CUDA_VISIBLE_DEVICES=0
+      - API_GATEWAY_URL=http://api-gateway:8000
+    depends_on:
+      - api-gateway
+    networks:
+      - media-network
+
+  # Transcription service (GPU-enabled)
+  transcription:
+    build:
+      context: .
+      dockerfile: services/transcription/Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MODELS_DIR=/app/models
+    volumes:
+      - ./models:/app/models
+      - media_files:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
+              count: 1
               capabilities: [gpu]
+    networks:
+      - media-network
+
+  # Translation service (GPU-enabled)
+  translation:
+    build:
+      context: .
+      dockerfile: services/translation/Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MODELS_DIR=/app/models
+    volumes:
+      - ./models:/app/models
+      - media_files:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - media-network
+
+  # OCR service (optional GPU)
+  ocr:
+    build:
+      context: .
+      dockerfile: services/ocr/Dockerfile
+    ports:
+      - "8003:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - media_files:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - media-network
+
+  # TTS service (CPU only)
+  tts:
+    build:
+      context: .
+      dockerfile: services/tts/Dockerfile
+    ports:
+      - "8004:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - media_files:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - media-network
+
+  # Subtitle service (CPU only)
+  subtitle:
+    build:
+      context: .
+      dockerfile: services/subtitle/Dockerfile
+    ports:
+      - "8005:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - media_files:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - media-network
+
+  # Optional: Redis Commander for debugging
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    networks:
+      - media-network
+    profiles:
+      - debug
+
+volumes:
+  redis_data:
+  media_files:
+
+networks:
+  media-network:
+    driver: bridge

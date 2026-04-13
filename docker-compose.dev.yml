@@ -1,0 +1,67 @@
+version: "3.8"
+
+# Development overrides
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  api-gateway:
+    volumes:
+      - ./services/api-gateway:/app/services/api-gateway
+      - ./services/shared:/app/services/shared
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+
+  gradio-ui:
+    volumes:
+      - ./services/gradio-ui:/app/services/gradio-ui
+      - ./services/shared:/app/services/shared
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  transcription:
+    volumes:
+      - ./services/transcription:/app/services/transcription
+      - ./services/shared:/app/services/shared
+      - ./models:/app/models
+      - media_files:/app/media
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+
+  translation:
+    volumes:
+      - ./services/translation:/app/services/translation
+      - ./services/shared:/app/services/shared
+      - ./models:/app/models
+      - media_files:/app/media
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+
+  ocr:
+    volumes:
+      - ./services/ocr:/app/services/ocr
+      - ./services/shared:/app/services/shared
+      - media_files:/app/media
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+
+  tts:
+    volumes:
+      - ./services/tts:/app/services/tts
+      - ./services/shared:/app/services/shared
+      - media_files:/app/media
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+
+  subtitle:
+    volumes:
+      - ./services/subtitle:/app/services/subtitle
+      - ./services/shared:/app/services/shared
+      - media_files:/app/media
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
