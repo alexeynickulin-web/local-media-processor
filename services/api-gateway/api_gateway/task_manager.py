@@ -8,8 +8,17 @@ from datetime import datetime
 
 logger = setup_logging("task-manager")
 
-# Create Celery app for task management
-celery_app = create_celery_app("api-gateway")
+# Create Celery app for task management - include all service tasks
+celery_app = create_celery_app(
+    "api-gateway",
+    include=[
+        "services.transcription.worker",
+        "services.translation.worker",
+        "services.ocr.worker",
+        "services.tts.worker",
+        "services.subtitle.worker",
+    ],
+)
 
 
 class TaskManager:

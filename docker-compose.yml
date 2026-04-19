@@ -16,6 +16,12 @@ services:
       retries: 5
     networks:
       - media-network
+    profiles:
+      - all
+      - minimal
+      - tts-only
+      - transcription-only
+      - translation-only
 
   # API Gateway - routes requests to backend services
   api-gateway:
@@ -26,6 +32,11 @@ services:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - TRANSCRIPTION_SERVICE_URL=http://transcription:8000
+      - TRANSLATION_SERVICE_URL=http://translation:8000
+      - OCR_SERVICE_URL=http://ocr:8000
+      - TTS_SERVICE_URL=http://tts:8000
+      - SUBTITLE_SERVICE_URL=http://subtitle:8000
       - LOG_LEVEL=INFO
     depends_on:
       redis:
@@ -37,6 +48,9 @@ services:
       retries: 3
     networks:
       - media-network
+    profiles:
+      - all
+      - minimal
 
   # Gradio UI
   gradio-ui:
@@ -47,12 +61,17 @@ services:
       - "7860:7860"
     environment:
       - API_GATEWAY_URL=http://api-gateway:8000
+      - TTS_SERVICE_URL=http://tts:8000
     depends_on:
       - api-gateway
     networks:
       - media-network
+    profiles:
+      - all
+      - minimal
+      - tts-only
 
-  # Transcription service (GPU-enabled)
+  # Transcription Service
   transcription:
     build:
       context: .
@@ -68,17 +87,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     networks:
       - media-network
+    profiles:
+      - all
+      - transcription-only
 
-  # Translation service (GPU-enabled)
+  # Translation Service
   translation:
     build:
       context: .
@@ -94,17 +109,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     networks:
       - media-network
+    profiles:
+      - all
+      - translation-only
 
-  # OCR service (optional GPU)
+  # OCR Service
   ocr:
     build:
       context: .
@@ -120,8 +131,10 @@ services:
         condition: service_healthy
     networks:
       - media-network
+    profiles:
+      - all
 
-  # TTS service (CPU only)
+  # TTS Service
   tts:
     build:
       context: .
@@ -130,15 +143,20 @@ services:
       - "8004:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - OUTPUT_DIR=/app/output
     volumes:
+      - tts_output:/app/output
       - media_files:/app/media
     depends_on:
       redis:
         condition: service_healthy
     networks:
       - media-network
+    profiles:
+      - all
+      - tts-only
 
-  # Subtitle service (CPU only)
+  # Subtitle Service
   subtitle:
     build:
       context: .
@@ -147,15 +165,19 @@ services:
       - "8005:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - OUTPUT_DIR=/app/output
     volumes:
+      - subtitle_output:/app/output
       - media_files:/app/media
     depends_on:
       redis:
         condition: service_healthy
     networks:
       - media-network
+    profiles:
+      - all
 
-  # Optional: Redis Commander for debugging
+  # Optional: Redis Commander
   redis-commander:
     image: rediscommander/redis-commander:latest
     ports:
@@ -172,6 +194,8 @@ services:
 volumes:
   redis_data:
   media_files:
+  tts_output:
+  subtitle_output:
 
 networks:
   media-network:

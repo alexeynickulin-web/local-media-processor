@@ -28,5 +28,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run both FastAPI app and Celery worker
-CMD ["sh", "-c", "uvicorn services.transcription.app:app --host 0.0.0.0 --port 8000 & celery -A services.transcription.worker worker --loglevel=info"]
+# Run both FastAPI app and Celery worker (listen to transcription queue)
+CMD ["sh", "-c", "uvicorn services.transcription.app:app --host 0.0.0.0 --port 8000 & celery -A services.transcription.worker worker --loglevel=info -Q transcription"]
